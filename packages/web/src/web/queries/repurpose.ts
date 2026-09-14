@@ -26,3 +26,29 @@ export function useRemoveRun() {
     }),
   );
 }
+
+export function useUpdateFormat() {
+  const qc = useQueryClient();
+  return useMutation(
+    orpc.repurpose.update.mutationOptions({
+      onSuccess: (run) => {
+        qc.setQueryData(orpc.repurpose.history.queryKey(), (items) =>
+          items?.map((item) => (item.id === run.id ? run : item)),
+        );
+      },
+    }),
+  );
+}
+
+export function useRegenerateFormat() {
+  const qc = useQueryClient();
+  return useMutation(
+    orpc.repurpose.regenerate.mutationOptions({
+      onSuccess: (run) => {
+        qc.setQueryData(orpc.repurpose.history.queryKey(), (items) =>
+          items?.map((item) => (item.id === run.id ? run : item)),
+        );
+      },
+    }),
+  );
+}
