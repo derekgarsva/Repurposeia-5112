@@ -24,16 +24,14 @@ export async function getBillingStatus(request: Request) {
   return getStatusForToken(token);
 }
 
-export async function assertCanGenerate(request: Request) {
-  await ensureRepurposeSchema();
-  const { token } = getOrCreateSession(request);
+export async function assertCanGenerateForToken(token: string) {
   const status = await getStatusForToken(token);
   if (status.plan === "free" && status.used >= FREE_RUN_LIMIT) {
     throw new ORPCError("FORBIDDEN", {
       message: `Has usado tus ${FREE_RUN_LIMIT} generaciones gratis. Pásate a Pro por $12/mes para seguir creando.`,
     });
   }
-  return token;
+  return status;
 }
 
 async function getStatusForToken(token: string) {
