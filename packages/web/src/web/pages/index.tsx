@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Clock, Cpu, Download, Layers, Zap } from "lucide-react";
+import { Clock, Cpu, Download, Layers, Zap, Sparkles } from "lucide-react";
 import { Composer } from "../components/composer";
 import { FormatCard } from "../components/format-card";
 import { History } from "../components/history";
@@ -23,6 +23,7 @@ type Run = {
   sourceExcerpt: string;
   formats: Output[];
 };
+type Billing = { plan: "free" | "pro"; status: string; used: number; limit: number; remaining: number | null };
 
 const DEFAULT_FORMATS = ["x_thread", "linkedin", "newsletter", "short_script"];
 
@@ -41,14 +42,29 @@ function Index() {
   const [language, setLanguage] = useState("es");
   const [formats, setFormats] = useState<string[]>(DEFAULT_FORMATS);
   const [active, setActive] = useState<Run | null>(null);
+  const [billing, setBilling] = useState<Billing | null>(null);
+  const [checkoutPending, setCheckoutPending] = useState(false);
 
   const allFormats = options.data?.formats ?? [];
   const tones = useMemo(() => options.data?.tones?.map((t) => ({ ...t })) ?? [], [options.data]);
   const languages = useMemo(() => options.data?.languages?.map((l) => ({ ...l })) ?? [], [options.data]);
   const items = history.data ?? [];
 
+  const refreshBilling = async () => {
+    const response = await fetch("/api/billing/status", { credentials: "include", cache: "no-store" });
+    if (!response.ok) return;
+    setBilling((await response.json()) as Billing);
+  };
+
   useEffect(() => {
-    if (generate.data) setActive(generate.data as Run);
+    void refreshBilling();
+  }, []);
+
+  useEffect(() => {
+    if (generate.data) {
+      setActive(generate.data as Run);
+      void refreshBilling();
+    }
   }, [generate.data]);
 
   useEffect(() => {
@@ -73,6 +89,19 @@ function Index() {
     setActive(run as Run);
   };
 
+  const upgrade = async () => {
+    if (checkoutPending) return;
+    setCheckoutPending(true);
+    try {
+      const response = await fetch("/api/billing/checkout", { method: "POST", credentials: "include" });
+      const payload = (await response.json().catch(() => null)) as { url?: string; error?: string } | null;
+      if (!response.ok || !payload?.url) throw new Error(payload?.error || "No se pudo iniciar el pago.");
+      window.location.assign(payload.url);
+    } catch {
+      setCheckoutPending(false);
+    }
+  };
+
   const downloadAll = () => {
     if (!active) return;
     const body = active.formats.map((format) => `# ${format.label}\n\n${format.content}`).join("\n\n---\n\n");
@@ -84,6 +113,8 @@ function Index() {
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  const quotaMessage = generate.error?.message?.includes("generaciones gratis") ? generate.error.message : null;
 
   return (
     <div className="mx-auto min-h-screen w-full max-w-[1400px] px-5 pt-10 pb-24 sm:px-8 lg:px-12">
@@ -99,10 +130,33 @@ function Index() {
             <span className="text-acid italic">Seis piezas</span> listas para publicar.
           </h1>
         </div>
-        <p className="max-w-xs text-[14.5px] text-paper-dim">
-          Pega un artículo, una transcripción o una URL. La IA lee, entiende y reescribe todo en paralelo — con el tono y el idioma que elijas.
-        </p>
+        <div className="flex max-w-xs flex-col items-end gap-3">
+          <p className="text-right text-[14.5px] text-paper-dim">
+            Pega un artículo, una transcripción o una URL. La IA lee, entiende y reescribe todo en paralelo.
+          </p>
+          {billing && (
+            <div className="flex items-center gap-2">
+              <span className="label-mono border border-ink-line rounded-sm px-2 py-1">
+                {billing.plan === "pro" ? "PRO" : `${billing.remaining}/${billing.limit} gratis`}
+              </span>
+              {billing.plan !== "pro" && (
+                <button onClick={upgrade} disabled={checkoutPending} className="flex items-center gap-1.5 rounded-sm bg-acid px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-widest text-ink transition hover:brightness-110 disabled:opacity-60">
+                  <Sparkles className="size-3" /> Pro $12/mes
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </header>
+
+      {quotaMessage && billing?.plan !== "pro" && (
+        <div className="rise mt-5 flex flex-wrap items-center justify-between gap-4 rounded-md border border-acid/30 bg-acid/5 px-4 py-3">
+          <p className="text-[13.5px] text-paper/90">{quotaMessage}</p>
+          <button onClick={upgrade} disabled={checkoutPending} className="flex items-center gap-2 rounded-sm bg-acid px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-widest text-ink disabled:opacity-60">
+            <Sparkles className="size-3.5" /> Pasar a Pro
+          </button>
+        </div>
+      )}
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.14fr)] lg:gap-10">
         <div className="rise space-y-6" style={{ animationDelay: "90ms" }}>
@@ -161,16 +215,7 @@ function Index() {
 
               <div className="grid gap-4 xl:grid-cols-2">
                 {active.formats.map((f, i) => (
-                  <FormatCard
-                    key={f.key}
-                    runId={active.id}
-                    formatKey={f.key}
-                    label={f.label}
-                    content={f.content}
-                    index={i}
-                    onSave={saveFormat}
-                    onRegenerate={regenerate}
-                  />
+                  <FormatCard key={f.key} runId={active.id} formatKey={f.key} label={f.label} content={f.content} index={i} onSave={saveFormat} onRegenerate={regenerate} />
                 ))}
               </div>
             </>
