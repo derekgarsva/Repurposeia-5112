@@ -5,4 +5,5 @@ export const gateway = createGateway({
   apiKey: process.env.AI_GATEWAY_API_KEY,
 });
 
-export const MODEL = "anthropic/claude-sonnet-4.6";
+// Keep the production default stable, but allow cheaper/faster model routing per environment.
+export const MODEL = process.env.REPURPOSE_MODEL?.trim() || "anthropic/claude-sonnet-4.6";
