@@ -27,9 +27,7 @@ export async function getBillingStatus(request: Request) {
 export async function assertCanGenerateForToken(token: string) {
   const status = await getStatusForToken(token);
   if (status.plan === "free" && status.used >= FREE_RUN_LIMIT) {
-    throw new ORPCError("FORBIDDEN", {
-      message: `Has usado tus ${FREE_RUN_LIMIT} generaciones gratis. Pásate a Pro por $12/mes para seguir creando.`,
-    });
+    throw new ORPCError("FORBIDDEN", { message: `Has usado tus ${FREE_RUN_LIMIT} generaciones gratis. Pásate a Pro por $12/mes para seguir creando.` });
   }
   return status;
 }
@@ -37,18 +35,9 @@ export async function assertCanGenerateForToken(token: string) {
 async function getStatusForToken(token: string) {
   const [entitlement] = await db.select().from(schema.entitlements).where(eq(schema.entitlements.ownerToken, token));
   const since = new Date(Date.now() - WINDOW_MS);
-  const runs = await db
-    .select({ id: schema.runs.id })
-    .from(schema.runs)
-    .where(and(eq(schema.runs.ownerToken, token), gte(schema.runs.createdAt, since)));
+  const runs = await db.select({ id: schema.runs.id }).from(schema.runs).where(and(eq(schema.runs.ownerToken, token), gte(schema.runs.createdAt, since)));
   const pro = activePro(entitlement?.plan, entitlement?.status);
-  return {
-    plan: pro ? "pro" : "free",
-    status: entitlement?.status ?? "free",
-    used: runs.length,
-    limit: FREE_RUN_LIMIT,
-    remaining: pro ? null : Math.max(0, FREE_RUN_LIMIT - runs.length),
-  };
+  return { plan: pro ? "pro" : "free", status: entitlement?.status ?? "free", used: runs.length, limit: FREE_RUN_LIMIT, remaining: pro ? null : Math.max(0, FREE_RUN_LIMIT - runs.length) };
 }
 
 export async function createCheckout(request: Request) {
@@ -60,7 +49,6 @@ export async function createCheckout(request: Request) {
   const stripeKey = env("STRIPE_SECRET_KEY");
   const priceId = env("STRIPE_PRICE_PRO_MONTHLY");
   const origin = process.env.APP_ORIGIN?.trim() || new URL(request.url).origin;
-
   const form = new URLSearchParams();
   form.set("mode", "subscription");
   form.set("line_items[0][price]", priceId);
@@ -84,9 +72,31 @@ export async function createCheckout(request: Request) {
   }
 
   const payload = (await response.json().catch(() => null)) as { url?: string; error?: { message?: string } } | null;
-  if (!response.ok || !payload?.url) {
-    throw new ORPCError("BAD_REQUEST", { message: payload?.error?.message?.slice(0, 180) || "Stripe rechazó el checkout." });
+  if (!response.ok || !payload?.url) throw new ORPCError("BAD_REQUEST", { message: payload?.error?.message?.slice(0, 180) || "Stripe rechazó el checkout." });
+  return { url: payload.url };
+}
+
+export async function createPortal(request: Request) {
+  const { token } = getOrCreateSession(request);
+  await ensureRepurposeSchema();
+  const [entitlement] = await db.select().from(schema.entitlements).where(eq(schema.entitlements.ownerToken, token));
+  if (!entitlement?.stripeCustomerId) throw new ORPCError("BAD_REQUEST", { message: "No hay una suscripción de Stripe asociada a esta sesión." });
+
+  const stripeKey = env("STRIPE_SECRET_KEY");
+  const origin = process.env.APP_ORIGIN?.trim() || new URL(request.url).origin;
+  const form = new URLSearchParams({ customer: entitlement.stripeCustomerId, return_url: origin });
+  let response: Response;
+  try {
+    response = await fetch(`${STRIPE_API}/billing_portal/sessions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${stripeKey}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: form,
+    });
+  } catch {
+    throw new ORPCError("INTERNAL_SERVER_ERROR", { message: "No pude abrir el portal de facturación." });
   }
+  const payload = (await response.json().catch(() => null)) as { url?: string; error?: { message?: string } } | null;
+  if (!response.ok || !payload?.url) throw new ORPCError("BAD_REQUEST", { message: payload?.error?.message?.slice(0, 180) || "Stripe rechazó el portal." });
   return { url: payload.url };
 }
 
@@ -95,11 +105,8 @@ export async function handleStripeWebhook(request: Request) {
   const secret = env("STRIPE_WEBHOOK_SECRET");
   const signature = request.headers.get("stripe-signature");
   if (!signature) throw new ORPCError("BAD_REQUEST", { message: "Firma de Stripe ausente." });
-
   const body = await request.text();
-  if (!(await verifyStripeSignature(body, signature, secret))) {
-    throw new ORPCError("UNAUTHORIZED", { message: "Firma de Stripe inválida." });
-  }
+  if (!(await verifyStripeSignature(body, signature, secret))) throw new ORPCError("UNAUTHORIZED", { message: "Firma de Stripe inválida." });
 
   const event = JSON.parse(body) as { type: string; data?: { object?: Record<string, unknown> } };
   const object = event.data?.object ?? {};
@@ -109,23 +116,18 @@ export async function handleStripeWebhook(request: Request) {
   if (event.type === "checkout.session.completed" && ownerToken) {
     await saveEntitlement(ownerToken, "active", typeof object.customer === "string" ? object.customer : null, typeof object.subscription === "string" ? object.subscription : null);
   }
-
   if ((event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") && ownerToken) {
     const status = event.type === "customer.subscription.deleted" ? "canceled" : String(object.status ?? "unknown");
     await saveEntitlement(ownerToken, status, typeof object.customer === "string" ? object.customer : null, typeof object.id === "string" ? object.id : null);
   }
-
   return { received: true };
 }
 
 async function saveEntitlement(ownerToken: string, status: string, customerId: string | null, subscriptionId: string | null) {
-  await db
-    .insert(schema.entitlements)
-    .values({ ownerToken, plan: activePro("pro", status) ? "pro" : "free", status, stripeCustomerId: customerId, stripeSubscriptionId: subscriptionId, updatedAt: new Date() })
-    .onConflictDoUpdate({
-      target: schema.entitlements.ownerToken,
-      set: { plan: activePro("pro", status) ? "pro" : "free", status, stripeCustomerId: customerId, stripeSubscriptionId: subscriptionId, updatedAt: new Date() },
-    });
+  await db.insert(schema.entitlements).values({ ownerToken, plan: activePro("pro", status) ? "pro" : "free", status, stripeCustomerId: customerId, stripeSubscriptionId: subscriptionId, updatedAt: new Date() }).onConflictDoUpdate({
+    target: schema.entitlements.ownerToken,
+    set: { plan: activePro("pro", status) ? "pro" : "free", status, stripeCustomerId: customerId, stripeSubscriptionId: subscriptionId, updatedAt: new Date() },
+  });
 }
 
 async function verifyStripeSignature(payload: string, header: string, secret: string) {
@@ -135,7 +137,6 @@ async function verifyStripeSignature(payload: string, header: string, secret: st
   if (!timestamp || signatures.length === 0) return false;
   const age = Math.abs(Date.now() / 1000 - Number(timestamp));
   if (!Number.isFinite(age) || age > 300) return false;
-
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(`${timestamp}.${payload}`));
@@ -150,6 +151,4 @@ function timingSafeEqual(left: string, right: string) {
   return diff === 0;
 }
 
-export function freeRunLimit() {
-  return FREE_RUN_LIMIT;
-}
+export function freeRunLimit() { return FREE_RUN_LIMIT; }
