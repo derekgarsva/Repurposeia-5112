@@ -1,14 +1,13 @@
 const SESSION_COOKIE = "repurpose_session";
 const SESSION_HEADER = "x-repurpose-session";
-
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 
 export function getOrCreateSession(request: Request): { token: string; isNew: boolean } {
   const fromHeader = request.headers.get(SESSION_HEADER)?.trim();
-  if (isSafeToken(fromHeader)) return { token: fromHeader!, isNew: false };
+  if (isSafeToken(fromHeader)) return { token: fromHeader, isNew: false };
 
   const fromCookie = readCookie(request.headers.get("cookie"), SESSION_COOKIE);
-  if (isSafeToken(fromCookie)) return { token: fromCookie!, isNew: false };
+  if (isSafeToken(fromCookie)) return { token: fromCookie, isNew: false };
 
   return { token: crypto.randomUUID(), isNew: true };
 }
@@ -27,7 +26,11 @@ export function appendSessionCookie(response: Response, token: string): Response
       process.env.NODE_ENV === "production" ? "; Secure" : ""
     }`,
   );
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function readCookie(cookieHeader: string | null, name: string): string | undefined {
