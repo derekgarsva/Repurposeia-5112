@@ -6,6 +6,8 @@ import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
  */
 export const runs = sqliteTable("runs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
+  // Anonymous browser/session ownership until account auth is wired in.
+  ownerToken: text("owner_token"),
   title: text("title").notNull(),
   sourceKind: text("source_kind").notNull(), // "text" | "url"
   sourceValue: text("source_value").notNull(),
