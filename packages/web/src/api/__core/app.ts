@@ -3,17 +3,9 @@ import { cors } from "hono/cors";
 import { os, type Router } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import { appendSessionCookie, getOrCreateSession, withSessionHeader } from "./session";
-
-/**
- * TEMPLATE-MANAGED (__ prefix) — do not edit. Feature procedures belong in
- * src/api/routes/, composed in src/api/index.ts.
- *
- * oRPC is the API layer: define procedures on the `router` in src/api/index.ts;
- * they are served at /api/rpc/* and called through the typed clients.
- */
+import { createCheckout, getBillingStatus, handleStripeWebhook } from "../routes/billing";
 
 export interface RpcContext {
-  /** Raw request headers — read auth/session information here. */
   headers: Headers;
 }
 
@@ -38,6 +30,25 @@ export function createApp(router: Router<Record<never, never>, RpcContext>) {
   );
 
   app.get("/api/health", (c) => c.json({ status: "ok" }, 200));
+
+  app.get("/api/billing/status", async (c) => {
+    const session = getOrCreateSession(c.req.raw);
+    const result = await getBillingStatus(c.req.raw);
+    const response = c.json(result, 200, { "cache-control": "no-store" });
+    return session.isNew ? appendSessionCookie(response, session.token) : response;
+  });
+
+  app.post("/api/billing/checkout", async (c) => {
+    const session = getOrCreateSession(c.req.raw);
+    const result = await createCheckout(withSessionHeader(c.req.raw, session.token));
+    const response = c.json(result, 200, { "cache-control": "no-store" });
+    return session.isNew ? appendSessionCookie(response, session.token) : response;
+  });
+
+  app.post("/api/billing/webhook", async (c) => {
+    const result = await handleStripeWebhook(c.req.raw);
+    return c.json(result, 200);
+  });
 
   const handler = new RPCHandler(router);
   app.use("/api/rpc/*", async (c, next) => {
