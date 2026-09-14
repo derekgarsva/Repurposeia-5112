@@ -9,6 +9,7 @@ import * as schema from "../../database/schema";
 import { gateway, MODEL } from "../../agent/gateway";
 import { FORMATS, FORMAT_KEYS, LANGUAGE_NAMES, LANGUAGES, TONES } from "./formats";
 import { excerpt, fetchUrlText } from "./source";
+import { assertCanGenerateForToken } from "../billing";
 
 type Output = { key: string; label: string; content: string };
 
@@ -128,13 +129,7 @@ export const repurpose = {
   }),
 
   update: base
-    .input(
-      z.object({
-        id: z.number().int().positive(),
-        format: z.string(),
-        content: z.string().trim().min(1).max(12_000),
-      }),
-    )
+    .input(z.object({ id: z.number().int().positive(), format: z.string(), content: z.string().trim().min(1).max(12_000) }))
     .handler(async ({ input, context }) => {
       await ensureRepurposeSchema();
       const sessionToken = requireSession(context.headers);
@@ -159,13 +154,7 @@ export const repurpose = {
     }),
 
   regenerate: base
-    .input(
-      z.object({
-        id: z.number().int().positive(),
-        format: z.string(),
-        extra: z.string().trim().max(MAX_EXTRA_CHARS).default(""),
-      }),
-    )
+    .input(z.object({ id: z.number().int().positive(), format: z.string(), extra: z.string().trim().max(MAX_EXTRA_CHARS).default("") }))
     .handler(async ({ input, context }) => {
       await ensureRepurposeSchema();
       const sessionToken = requireSession(context.headers);
@@ -178,20 +167,10 @@ export const repurpose = {
 
       const source = row.sourceExcerpt;
       if (!source || source.length < 80) {
-        throw new ORPCError("BAD_REQUEST", {
-          message: "No hay suficiente fuente guardada para regenerar esta pieza.",
-        });
+        throw new ORPCError("BAD_REQUEST", { message: "No hay suficiente fuente guardada para regenerar esta pieza." });
       }
 
-      const output = await runFormat({
-        format,
-        source,
-        title: row.title,
-        tone: row.tone,
-        language: row.language,
-        extra: input.extra,
-      });
-
+      const output = await runFormat({ format, source, title: row.title, tone: row.tone, language: row.language, extra: input.extra });
       const outputs = JSON.parse(row.formats) as Output[];
       const index = outputs.findIndex((item) => item.key === input.format);
       if (index < 0) throw new ORPCError("NOT_FOUND", { message: "Ese formato ya no existe en el resultado." });
@@ -212,22 +191,16 @@ export const repurpose = {
         value: z.string().trim().min(1).max(MAX_SOURCE_CHARS * 2),
         tone: z.string().refine((v) => toneKeys.includes(v as never)),
         language: z.string().refine((v) => langKeys.includes(v as never)),
-        formats: z
-          .array(z.string())
-          .min(1)
-          .max(FORMATS.length)
-          .refine((values) => values.every((value) => FORMAT_KEYS.includes(value)), {
-            message: "Uno de los formatos seleccionados no existe.",
-          })
-          .refine((values) => new Set(values).size === values.length, {
-            message: "No repitas formatos.",
-          }),
+        formats: z.array(z.string()).min(1).max(FORMATS.length)
+          .refine((values) => values.every((value) => FORMAT_KEYS.includes(value)), { message: "Uno de los formatos seleccionados no existe." })
+          .refine((values) => new Set(values).size === values.length, { message: "No repitas formatos." }),
         extra: z.string().trim().max(MAX_EXTRA_CHARS).default(""),
       }),
     )
     .handler(async ({ input, context }) => {
       await ensureRepurposeSchema();
       const sessionToken = requireSession(context.headers);
+      await assertCanGenerateForToken(sessionToken);
       const started = Date.now();
 
       let source = input.value;
@@ -241,18 +214,12 @@ export const repurpose = {
         title = fetched.title;
         source = fetched.text;
       } else {
-        if (source.length < 120) {
-          throw new ORPCError("BAD_REQUEST", {
-            message: "Necesito al menos ~120 caracteres de texto para trabajar.",
-          });
-        }
+        if (source.length < 120) throw new ORPCError("BAD_REQUEST", { message: "Necesito al menos ~120 caracteres de texto para trabajar." });
         source = source.slice(0, MAX_SOURCE_CHARS);
       }
 
       const selected = FORMATS.filter((format) => input.formats.includes(format.key));
-      if (selected.length === 0) {
-        throw new ORPCError("BAD_REQUEST", { message: "Elige al menos un formato." });
-      }
+      if (selected.length === 0) throw new ORPCError("BAD_REQUEST", { message: "Elige al menos un formato." });
 
       if (!title) {
         const { text } = await generateText({
@@ -264,36 +231,12 @@ export const repurpose = {
       }
 
       const outputs = await Promise.all(
-        selected.map((format) =>
-          runFormat({
-            format,
-            source,
-            title,
-            tone: input.tone,
-            language: input.language,
-            extra: input.extra,
-          }).catch((error) => ({
-            key: format.key,
-            label: format.label,
-            content: `⚠️ No se pudo generar este formato: ${safeErrorMessage(error)}`,
-          })),
-        ),
+        selected.map((format) => runFormat({ format, source, title, tone: input.tone, language: input.language, extra: input.extra }).catch((error) => ({ key: format.key, label: format.label, content: `⚠️ No se pudo generar este formato: ${safeErrorMessage(error)}` }))),
       );
 
       const [row] = await db
         .insert(schema.runs)
-        .values({
-          ownerToken: sessionToken,
-          title: title || "Sin título",
-          sourceKind: input.kind,
-          sourceValue: sourceUrl,
-          sourceExcerpt: excerpt(input.kind === "url" ? source : input.value),
-          tone: input.tone,
-          language: input.language,
-          formats: JSON.stringify(outputs),
-          model: MODEL,
-          durationMs: Date.now() - started,
-        })
+        .values({ ownerToken: sessionToken, title: title || "Sin título", sourceKind: input.kind, sourceValue: sourceUrl, sourceExcerpt: excerpt(input.kind === "url" ? source : input.value), tone: input.tone, language: input.language, formats: JSON.stringify(outputs), model: MODEL, durationMs: Date.now() - started })
         .returning();
 
       return serializeRun(row!);
