@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { getOrCreateSession, withSessionHeader } from "./session";
 
 describe("repurpose session", () => {
