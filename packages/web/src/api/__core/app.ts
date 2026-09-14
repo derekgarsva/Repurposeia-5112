@@ -21,12 +21,7 @@ export const base = os.$context<RpcContext>();
 
 function allowedOrigins() {
   return new Set(
-    [
-      process.env.APP_ORIGIN,
-      process.env.CORS_ORIGINS,
-      "http://localhost:3000",
-      "http://localhost:5173",
-    ]
+    [process.env.APP_ORIGIN, process.env.CORS_ORIGINS, "http://localhost:3000", "http://localhost:5173"]
       .flatMap((value) => (value ? value.split(",") : []))
       .map((value) => value.trim())
       .filter(Boolean),
@@ -59,6 +54,7 @@ export function createApp(router: Router<Record<never, never>, RpcContext>) {
     }
 
     let result = c.newResponse(response.body, response);
+    result.headers.set("cache-control", "no-store");
     if (session.isNew) result = appendSessionCookie(result, session.token);
     return result;
   });
