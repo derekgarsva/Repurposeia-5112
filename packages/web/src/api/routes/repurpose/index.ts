@@ -31,6 +31,12 @@ function safeErrorMessage(error: unknown) {
   return error instanceof Error ? error.message.slice(0, 220) : "error desconocido";
 }
 
+function getFormat(key: string) {
+  const format = FORMATS.find((item) => item.key === key);
+  if (!format) throw new ORPCError("BAD_REQUEST", { message: "Ese formato no existe." });
+  return format;
+}
+
 async function runFormat(args: {
   format: (typeof FORMATS)[number];
   source: string;
@@ -120,6 +126,84 @@ export const repurpose = {
     }
     return { ok: true };
   }),
+
+  update: base
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        format: z.string(),
+        content: z.string().trim().min(1).max(12_000),
+      }),
+    )
+    .handler(async ({ input, context }) => {
+      await ensureRepurposeSchema();
+      const sessionToken = requireSession(context.headers);
+      getFormat(input.format);
+      const [row] = await db
+        .select()
+        .from(schema.runs)
+        .where(and(eq(schema.runs.id, input.id), eq(schema.runs.ownerToken, sessionToken)));
+      if (!row) throw new ORPCError("NOT_FOUND", { message: "Ese resultado ya no existe." });
+
+      const outputs = JSON.parse(row.formats) as Output[];
+      const target = outputs.find((item) => item.key === input.format);
+      if (!target) throw new ORPCError("NOT_FOUND", { message: "Ese formato ya no existe en el resultado." });
+      target.content = input.content;
+
+      const [updated] = await db
+        .update(schema.runs)
+        .set({ formats: JSON.stringify(outputs) })
+        .where(and(eq(schema.runs.id, input.id), eq(schema.runs.ownerToken, sessionToken)))
+        .returning();
+      return serializeRun(updated!);
+    }),
+
+  regenerate: base
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        format: z.string(),
+        extra: z.string().trim().max(MAX_EXTRA_CHARS).default(""),
+      }),
+    )
+    .handler(async ({ input, context }) => {
+      await ensureRepurposeSchema();
+      const sessionToken = requireSession(context.headers);
+      const format = getFormat(input.format);
+      const [row] = await db
+        .select()
+        .from(schema.runs)
+        .where(and(eq(schema.runs.id, input.id), eq(schema.runs.ownerToken, sessionToken)));
+      if (!row) throw new ORPCError("NOT_FOUND", { message: "Ese resultado ya no existe." });
+
+      const source = row.sourceExcerpt;
+      if (!source || source.length < 80) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "No hay suficiente fuente guardada para regenerar esta pieza.",
+        });
+      }
+
+      const output = await runFormat({
+        format,
+        source,
+        title: row.title,
+        tone: row.tone,
+        language: row.language,
+        extra: input.extra,
+      });
+
+      const outputs = JSON.parse(row.formats) as Output[];
+      const index = outputs.findIndex((item) => item.key === input.format);
+      if (index < 0) throw new ORPCError("NOT_FOUND", { message: "Ese formato ya no existe en el resultado." });
+      outputs[index] = output;
+
+      const [updated] = await db
+        .update(schema.runs)
+        .set({ formats: JSON.stringify(outputs) })
+        .where(and(eq(schema.runs.id, input.id), eq(schema.runs.ownerToken, sessionToken)))
+        .returning();
+      return serializeRun(updated!);
+    }),
 
   generate: base
     .input(
