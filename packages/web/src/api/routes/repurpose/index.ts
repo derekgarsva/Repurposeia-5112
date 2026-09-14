@@ -4,7 +4,7 @@ import { ORPCError } from "@orpc/server";
 import { generateText } from "ai";
 import dedent from "dedent";
 import { base } from "../../__core/app";
-import { db } from "../../database";
+import { db, ensureRepurposeSchema } from "../../database";
 import * as schema from "../../database/schema";
 import { gateway, MODEL } from "../../agent/gateway";
 import { FORMATS, FORMAT_KEYS, LANGUAGE_NAMES, LANGUAGES, TONES } from "./formats";
@@ -87,6 +87,7 @@ export const repurpose = {
   })),
 
   history: base.handler(async ({ context }) => {
+    await ensureRepurposeSchema();
     const sessionToken = requireSession(context.headers);
     const rows = await db
       .select()
@@ -98,6 +99,7 @@ export const repurpose = {
   }),
 
   get: base.input(z.object({ id: z.number().int().positive() })).handler(async ({ input, context }) => {
+    await ensureRepurposeSchema();
     const sessionToken = requireSession(context.headers);
     const [row] = await db
       .select()
@@ -108,6 +110,7 @@ export const repurpose = {
   }),
 
   remove: base.input(z.object({ id: z.number().int().positive() })).handler(async ({ input, context }) => {
+    await ensureRepurposeSchema();
     const sessionToken = requireSession(context.headers);
     const result = await db
       .delete(schema.runs)
@@ -139,6 +142,7 @@ export const repurpose = {
       }),
     )
     .handler(async ({ input, context }) => {
+      await ensureRepurposeSchema();
       const sessionToken = requireSession(context.headers);
       const started = Date.now();
 
