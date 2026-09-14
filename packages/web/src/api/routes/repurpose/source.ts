@@ -107,7 +107,7 @@ async function assertPublicHost(hostname: string) {
   }
 }
 
-function isPrivateOrLocalIp(address: string) {
+function isPrivateOrLocalIp(address: string): boolean {
   const version = isIP(address);
   if (version === 4) {
     const [a, b] = address.split(".").map(Number);
@@ -125,6 +125,10 @@ function isPrivateOrLocalIp(address: string) {
 
   if (version === 6) {
     const normalized = address.toLowerCase();
+    if (normalized.startsWith("::ffff:")) {
+      const mapped = normalized.slice(7);
+      return isIP(mapped) === 4 && isPrivateOrLocalIp(mapped);
+    }
     return (
       normalized === "::" ||
       normalized === "::1" ||
